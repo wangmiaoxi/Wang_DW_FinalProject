@@ -1,0 +1,290 @@
+---
+title: "Final_Project"
+author: "Miaoxi Wang"
+date: "4/29/2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Airbnb Analysis
+```{r echo=FALSE, warning=FALSE}
+library(tidytext)
+library(DT)
+library(tm)
+library(wordcloud)
+library(tidyverse)
+library(stringr)
+library(magrittr)
+library(leaflet)
+library(ggplot2)
+library(ggmap)
+library(dplyr)
+```
+#Data Cleansing
+The data contain some missing values, like NA???s or blank strings. So I changed few variables into some other datatype like price to a numeric type, and decription to a character type.
+```{r echo=TRUE, warning=FALSE}
+file<- "~/Desktop/DW_Project/listings.csv"
+listings <- read_csv("~/Desktop/DW_Project/listings.csv")
+datatable(listings ,extensions = 'Buttons', options = list(dom = 'Bfrtip', buttons = I('colvis')))
+listings_clean<- read.csv(file, na.strings=c(""," ","NA"))
+listings_clean$price <- as.numeric(sub("\\$","", listings_clean$price))
+listings_clean$description <- as.character(listings_clean$description)
+listings_clean$neighbourhood_cleansed <- factor(listings_clean$neighbourhood_cleansed)
+listings_clean$host_is_superhost <- factor(listings_clean$host_is_superhost)
+```
+
+#Tring to find the lower quartile, median and upper quartile of NY airbnb price.
+Median=$100, upper quartile > $168
+
+```{r echo=FALSE, warning=FALSE}
+#Median=$100, upper quartile > $168
+quantile(listings_clean$price,
+         probs = seq(0, 1, 0.01),
+         na.rm=TRUE)
+datatable(listings_clean ,extensions = 'Buttons', options = list(dom = 'Bfrtip', buttons = I('colvis')))
+```
+
+
+summary stat of price
+```{r echo=FALSE, warning=FALSE}
+summary(listings_clean$price)
+```
+
+#Sentiment analysis of top 10 neignbourhood in New York area
+top 10 neignbourhood 
+```{r echo=FALSE, warning=FALSE}
+#top 10 neignbourhood 
+top10neighbourhood <- listings_clean %>%
+  group_by(neighbourhood_cleansed) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+top10neighbourhood
+```
+filtering listings of top 10 neighbourhood and unnest words,
+then get word-sentiment lexicon,
+and count words associate with each type of sentiment in each neighbourhood
+```{r echo=FALSE, warning=FALSE}
+#filtering listings of top 10 neighbourhood and unnest words
+top10_words <- listings_clean %>%
+  filter(neighbourhood_cleansed %in% top10neighbourhood$neighbourhood_cleansed) %>%
+  select(id, description, neighbourhood_cleansed, review_scores_rating) %>%
+  unnest_tokens(word, description) %>%
+  filter(!word %in% stop_words$word, str_detect(word, "^[a-z']+$"))
+
+#get word-sentiment lexicon
+nrc <- sentiments %>%
+  filter(lexicon == "nrc") %>%
+  dplyr::select(word, sentiment)
+
+#count total words in top 10 neighbourhood
+totalwords <- top10_words %>%
+  group_by(neighbourhood_cleansed) %>%
+  mutate(total_words = n()) %>%
+  ungroup() %>%
+  distinct(id, neighbourhood_cleansed, total_words)
+
+#count words assoc. with each type of sentiment in each neighbourhood
+sentiment <- top10_words %>%
+  inner_join(nrc, by = "word") %>%
+  count(sentiment, id) %>%
+  ungroup() %>%
+  complete(sentiment, id, fill = list(n = 0)) %>%
+  inner_join(totalwords) %>%
+  group_by(neighbourhood_cleansed, sentiment, total_words) %>%
+  summarize(words = sum(n)) %>%
+  mutate(prop = round(words / total_words * 100, digits=1)) %>%
+  ungroup()
+
+```
+
+
+plot the sentiment in Top 10 Neighbourhoods
+```{r echo=FALSE, warning=FALSE}
+analysis_plot <- ggplot(data=sentiment) +
+  geom_bar(mapping=aes(x=neighbourhood_cleansed,
+                       y=prop),
+           stat="identity",  fill = "pink") +
+  facet_wrap( ~ sentiment) +
+  labs(title="Sentiment Analysis in Top 10 Neighbourhoods in New York",
+       x="Neighbourhood", y="Proportion \n (sentiment word count / total word count)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+analysis_plot
+```
+
+#Sentiment Analysis the sentiment by property type in New York area
+```{r echo=FALSE, warning=FALSE}
+#######################################
+#Then Analysis the sentiment by property type
+propertyword <- listings %>%
+  select(id, description, property_type, review_scores_rating) %>%
+  unnest_tokens(word, description) %>%
+  filter(!word %in% stop_words$word, str_detect(word, "^[a-z']+$"))
+
+#count total words in each property type
+property_totalwords <- propertyword %>%
+  group_by(property_type) %>%
+  mutate(total_words = n()) %>%
+  ungroup() %>%
+  distinct(id, property_type, total_words)
+
+#count words assoc. with each type of sentiment in each property type
+property_sentiment <- propertyword %>%
+  inner_join(nrc, by = "word") %>%
+  count(sentiment, id) %>%
+  ungroup() %>%
+  complete(sentiment, id, fill = list(n = 0)) %>%
+  inner_join(property_totalwords) %>%
+  group_by(property_type, sentiment, total_words) %>%
+  summarize(words = sum(n)) %>%
+  mutate(prop = round(words / total_words * 100, digits=1)) %>%
+  ungroup()
+
+#Filter missing values
+fliter_property_sentiment <- as.data.frame(property_sentiment %>% na.omit(property_sentiment[, c("property_type")]))
+
+#Plotting the analysis
+plot_property <- ggplot(fliter_property_sentiment) +
+  geom_bar(mapping=aes(x=property_type,
+                       y=prop),
+           stat="identity",  fill = "blue") +
+  facet_wrap( ~ sentiment) +
+  labs(title="Sentiment by Property type in New York",
+       x="Property_Type", y="Proportion \n (sentiment word count / total word count)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+plot_property
+```
+#In this part I tried to find the common words used in room descriptions
+so I plot the most 15 words used in Upper quantile and Lower quantile listings
+```{r echo=FALSE, warning=FALSE}
+#####################
+#the most common words in upper quartile
+listings_clean$price_upper_quartile <- ifelse(listings_clean$price >= 168, "Upper Quartile", "Others")
+listings_clean$price_lower_quartile <- ifelse(listings_clean$price <= 65, "Lower Quartile", "Others")
+#We need to use the unnest_tokens function to obtain one-row-per-term-per-listing-description
+words <- listings_clean %>%
+  select(id, description, price, price_upper_quartile,price_lower_quartile, review_scores_accuracy, review_scores_rating) %>%
+  unnest_tokens(word, description) %>%
+  filter(!word %in% stop_words$word,
+         str_detect(word, "^[a-z']+$"))
+words_uq <- words %>%
+  filter(price_upper_quartile == "Upper Quartile")
+#plot the graph
+common_words_plot_uq <- words_uq %>%
+  group_by(word) %>%
+  summarise(count = n()) %>%
+  top_n(n = 15, wt = count) %>%
+  ggplot() +
+  geom_bar(mapping = aes(x=reorder(word, count),
+                         y=count),
+           stat="identity", fill = "pink") +
+  coord_flip() +
+  labs(title="Top 15 words described in Upper quantile listings in New York",
+       x="Word count", y="Words") +
+  theme_minimal()
+
+common_words_plot_uq 
+```
+
+#the most common words in lower quartile
+```{r echo=FALSE, warning=FALSE}
+words_lq <- words %>%
+  filter(price_lower_quartile == "Lower Quartile")
+
+#plot the graph
+common_words_plot_lq <- words_lq %>%
+  group_by(word) %>%
+  summarise(count = n()) %>%
+  top_n(n = 15, wt = count) %>%
+  ggplot() +
+  geom_bar(mapping = aes(x=reorder(word, count),
+                         y=count),
+           stat="identity", fill = "yellow") +
+  coord_flip() +
+  labs(title="Top 15 words described in Lower quantile listings in New York",
+       x="Word count", y="Words") +
+  theme_minimal()
+
+common_words_plot_lq
+```
+
+#The Reviews from customers are also important, so I plot the most 15 words used in review in Upper quantile and Lower quantile listings
+I find another csv file includes the review detail of airbnb in NYC
+and I combine this two csv files to analysis
+```{r echo=FALSE, warning=FALSE}
+###Review Detail########
+reviews_detail <- read_csv("~/Desktop/DW_Project/reviews_detail.csv")
+
+uq <- listings_clean %>%
+  select(id, price, price_upper_quartile) %>%
+  filter(price_upper_quartile == "Upper Quartile")
+
+reviews_detail = reviews_detail[, -2]
+colnames(reviews_detail)[1] = "id"
+```
+#Top 15 common words used in review in Lower quantitle listings
+left-join by upper quartile and plot
+```{r echo=FALSE, warning=FALSE}
+new_review_uq <- left_join(uq, reviews_detail, by="id")
+
+words_review_uq <- new_review_uq %>%
+  select(id, comments, price, price_upper_quartile) %>%
+  unnest_tokens(word, comments) %>%
+  filter(!word %in% stop_words$word,
+         str_detect(word, "^[a-z']+$"))
+common_words_plot_review_uq <- words_review_uq %>%
+  group_by(word) %>%
+  summarise(count = n()) %>%
+  top_n(n = 15, wt = count) %>%
+  ggplot() +
+  geom_bar(mapping = aes(x=reorder(word, count),
+                         y=count),
+           stat="identity", fill = "pink") +
+  coord_flip() +
+  labs(title="The most 15 words used in review in Upper quantile listings",
+       x="Word count", y="Words") +
+  theme_minimal()
+
+common_words_plot_review_uq
+```
+
+#Top 15 common words used in review in Lower quantitle listings
+left-join by lower quartile and plot
+```{r echo=FALSE, warning=FALSE}
+lq <- listings_clean %>%
+  select(id, price, price_lower_quartile) %>%
+  filter(price_lower_quartile == "Lower Quartile")
+
+new_review_lq <- left_join(lq, reviews_detail, by="id")
+
+words_review_lq <- new_review_lq %>%
+  select(id, comments, price, price_lower_quartile) %>%
+  unnest_tokens(word, comments) %>%
+  filter(!word %in% stop_words$word,
+         str_detect(word, "^[a-z']+$"))
+common_words_plot_review_lq <- words_review_lq %>%
+  group_by(word) %>%
+  summarise(count = n()) %>%
+  top_n(n = 15, wt = count) %>%
+  ggplot() +
+  geom_bar(mapping = aes(x=reorder(word, count),
+                         y=count),
+           stat="identity", fill = "light blue") +
+  coord_flip() +
+  labs(title="The most 15 words used in review in Lower quantile listings",
+       x="Word count", y="Words") +
+  theme_minimal()
+
+common_words_plot_review_lq
+
+
+```
